@@ -1,0 +1,198 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import talib as ta
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import KNeighborsClassifier
+from web3 import Web3
+import requests
+
+# Constants
+PRIVATE_KEY = 0x5Bff68de2995D3950830B1E2021772c4f8b303F3
+PANCAKESWAP_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+TOKEN_A = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" # WBNB
+TOKEN_B = "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56" # BUSD
+KNN_NEIGHBORS = 5
+EMA_RIBBON_WINDOW = [5, 8, 13, 21, 34, 55, 89]
+RSI_PERIOD = 14
+
+st.set_page_config(page_title="Crypto Trading Bot")
+
+st.title("Crypto Trading Bot")
+st.write("Welcome to the Crypto Trading Bot Interface!")
+
+# Generate signals
+def generate_signals(df, ema_ribbon, rsi, knn_model, scaler):
+    # Combine data and technical indicators
+    features = ema_ribbon.join(rsi.rename("RSI")).dropna()
+    
+    # Scale features
+    features_scaled = scaler.transform(features)
+    
+    # Generate KNN signals
+    knn_signals = knn_model.predict(features_scaled)
+    
+    # Generate EMA Ribbon and RSI signals
+    ema_signals = np.sign(np.gradient(ema_ribbon["EMA5"]))
+    rsi_signals = np.where(rsi > 70, -1, np.where(rsi < 30, 1, 0))
+    
+    # Combine signals
+    combined_signals = knn_signals * ema_signals * rsi_signals
+    
+    return combined_signals
+
+# Swap tokens
+def swap_exact_tokens_for_tokens(w3, account, router, token_in, token_out, amount_in, to):
+    abi = [...]  # PancakeSwap Router ABI
+    contract = w3.eth.contract(address=Web3.toChecksumAddress(router), abi=abi)
+
+    # Approve the Router to spend tokens on your behalf
+    token_in_contract = w3.eth.contract(address=Web3.toChecksumAddress(token_in), abi=abi)
+    token_in_contract.functions.approve(router, amount_in).transact({"from": account.address, "gas": 200000})
+
+    # Swap tokens
+    deadline = w3.eth.getBlock("latest")["timestamp"] + 60  # Set deadline to 1 minute from now
+    txn = contract.functions.swapExactTokensForTokens(amount_in, 1, [token_in, token_out], to, deadline)
+    txn_params = {"from": account.address, "gas": 300000, "nonce": w3.eth.getTransactionCount(account.address)}
+    signed_txn = w3.eth.account.signTransaction(txn.buildTransaction(txn_params), PRIVATE_KEY)
+    txn_hash = w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+    txn_receipt = w3.eth.waitForTransactionReceipt(txn_hash)
+    print(f"Transaction receipt: {txn_receipt}")
+
+    # Fetch Binance data
+def fetch_binance_data(symbol, interval, limit):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    response = requests.get(url)
+    data = response.json()
+
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume",
+                                     "close_time", "quote_asset_volume", "number_of_trades",
+                                     "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("timestamp", inplace=True)
+    df = df.astype(float)
+
+    return df
+
+# Generate EMA Ribbon
+def generate_ema_ribbon(df, window):
+    ema_ribbon = pd.DataFrame()
+    for w in window:
+        ema = ta.EMA(df["close"], w)
+        ema_ribbon[f"EMA{w}"] = ema
+    return ema_ribbon
+
+# Generate RSI
+def generate_rsi(df, period):
+    return ta.RSI(df["close"], period)
+
+# Define Streamlit app
+app_mode = st.sidebar.selectbox("Please select a mode", ["Instructions", "Live Trading"])
+
+if app_mode == "Instructions":
+    st.write("# Welcome to the Crypto Trading Bot!")
+    st.write("Use this app to trade crypto automatically.")
+    st.write("Please select 'Live Trading' in the sidebar to begin trading.")
+
+elif app_mode == "Live Trading":
+    st.write("# Live Trading")
+
+    # Get input amount from user
+    input_amount = st.number_input("Enter input amount:", min_value=0.0, step=0.01)
+
+    # Check input balance
+    token_in_balance = w3.eth.get_balance(account.address, block_identifier="latest")
+    input_amount_wei = w3.toWei(input_amount, "ether")
+    if input_amount_wei > token_in_balance:
+        st.warning("Insufficient balance.")
+        return
+
+    # Define main function
+def main():
+    # Connect to BSC
+    w3 = Web3(Web3.HTTPProvider("https://bsc-dataseed.binance.org/"))
+
+    # Define account
+    account = w3.eth.account.from_key(PRIVATE_KEY)
+
+    # Initialize PancakeSwap Router
+    router = Web3.toChecksumAddress(PANCAKESWAP_ROUTER)
+
+    # Define input and output tokens
+    token_in = Web3.toChecksumAddress(TOKEN_A)
+    token_out = Web3.toChecksumAddress(TOKEN_B)
+
+    # Load KNN model
+    knn_model = joblib.load("knn_model.pkl")
+
+    # Load scaler
+    scaler = joblib.load("scaler.pkl")
+
+    # Define Streamlit app
+    st.sidebar.title("Crypto Trading Bot")
+    app_mode = st.sidebar.selectbox("Please select a mode", ["Instructions", "Live Trading"])
+
+    if app_mode == "Instructions":
+        st.write("# Welcome to the Crypto Trading Bot!")
+        st.write("Use this app to trade crypto automatically.")
+        st.write("Please select 'Live Trading' in the sidebar to begin trading.")
+
+    elif app_mode == "Live Trading":
+        st.write("# Live Trading")
+
+        # Get input amount from user
+        input_amount = st.number_input("Enter input amount:", min_value=0.0, step=0.01)
+
+        # Check input balance
+        token_in_balance = w3.eth.get_balance(account.address, block_identifier="latest")
+        input_amount_wei = w3.toWei(input_amount, "ether")
+        if input_amount_wei > token_in_balance:
+            st.warning("Insufficient balance.")
+            return
+
+        # Get token prices
+        token_in_price, token_out_price = get_token_prices(w3, token_in, token_out)
+
+        # Calculate output amount
+        output_amount = calculate_output_amount(input_amount, token_in_price, token_out_price)
+
+        # Get output amount estimate
+        output_amount_estimate = get_output_amount_estimate(w3, router, token_in, token_out, input_amount)
+
+        # Calculate estimated slippage
+        estimated_slippage = (output_amount_estimate - output_amount) / output_amount
+
+        # Display estimated output amount and slippage
+        st.write(f"Estimated output amount: {output_amount_estimate:.8f} {TOKEN_B}")
+        st.write(f"Estimated slippage: {estimated_slippage:.2%}")
+
+        # Confirm trade
+        confirm_trade = st.button("Confirm trade")
+        if not confirm_trade:
+            return
+
+        # Swap tokens
+        txn_hash = swap_exact_tokens_for_tokens(w3, account, router, token_in, token_out, input_amount_wei, account.address)
+        st.write(f"Transaction hash: {txn_hash.hex()}")
+
+        # Wait for transaction to be mined
+        txn_receipt = w3.eth.waitForTransactionReceipt(txn_hash)
+        if txn_receipt.status == 1:
+            st.success("Transaction succeeded.")
+        else:
+            st.error("Transaction failed.")
+
+        # Get token balances
+        token_in_balance = w3.eth.get_balance(account.address, block_identifier="latest")
+        token_out_balance = get_token_balance(w3, token_out, account.address)
+
+        # Display token balances
+        st.write(f"Token A balance: {w3.fromWei(token_in_balance, 'ether'):.8f} {TOKEN_A}")
+        st.write(f"Token B balance: {token_out_balance:.8f} {TOKEN_B}")
+
+        # Fetch Binance data
+        symbol = f"{TOKEN_A}_{TOKEN_B}"
+        interval = "1m"
+        limit = 200
+
